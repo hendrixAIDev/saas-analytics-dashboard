@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 # Import custom utilities
-from utils.auth import login, signup, logout, check_authentication, get_supabase_client
+from utils.auth import login, signup, logout, check_authentication, check_stored_session, get_supabase_client
 from utils.database import (
     get_monthly_revenue,
     get_revenue_by_plan,
@@ -310,6 +310,18 @@ def show_ai_insights_page(metrics: dict, revenue_df: pd.DataFrame, plan_df: pd.D
 
 # Main app logic
 def main():
+    """Main application entry point.
+    
+    Checks for stored session on page load, then shows appropriate view.
+    """
+    # Try to restore session from localStorage on page load
+    if not check_authentication():
+        restored = check_stored_session()
+        if restored:
+            # Session restored - trigger rerun to show dashboard
+            st.rerun()
+    
+    # Show appropriate view based on authentication status
     if check_authentication():
         show_dashboard()
     else:
