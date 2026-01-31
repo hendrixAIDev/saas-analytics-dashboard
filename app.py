@@ -312,37 +312,19 @@ def show_ai_insights_page(metrics: dict, revenue_df: pd.DataFrame, plan_df: pd.D
 def main():
     """Main application entry point.
     
-    Uses a two-phase session restore:
-    1. First render: JS eval component renders, returns None. Show loading.
-    2. Second render (auto-rerun): JS returns stored tokens or sentinel.
-       Restore session if tokens found, otherwise show login.
+    Checks for stored session cookie on page load, then shows appropriate view.
+    Cookies are available on first render (unlike JS eval), so no two-phase needed.
     """
     # Already authenticated — show dashboard
     if check_authentication():
         show_dashboard()
         return
     
-    # Try to restore session from localStorage
+    # Try to restore session from cookie
     restored = check_stored_session()
     
     if restored:
         # Session successfully restored — rerun to show dashboard
-        st.rerun()
-        return
-    
-    # Check if we're still waiting for JS to execute (first render)
-    if st.session_state.get("_session_pending"):
-        # Show a brief loading state while JS component renders,
-        # then auto-rerun so the JS result is available
-        st.markdown(
-            "<div style='text-align:center; padding:60px;'>"
-            "<h3>📊 SaaS Analytics Dashboard</h3>"
-            "<p style='color:#888;'>Restoring session...</p>"
-            "</div>",
-            unsafe_allow_html=True
-        )
-        import time
-        time.sleep(0.5)
         st.rerun()
         return
     

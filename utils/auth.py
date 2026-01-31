@@ -1,4 +1,4 @@
-"""Authentication utilities using Supabase."""
+"""Authentication utilities using Supabase with cookie-based session persistence."""
 import streamlit as st
 from supabase import create_client, Client
 import os
@@ -8,8 +8,9 @@ import json
 
 load_dotenv()
 
-# Session storage key for browser localStorage
-SESSION_STORAGE_KEY = "saas_dashboard_session"
+# Cookie key for session persistence
+SESSION_COOKIE_KEY = "saas_dashboard_session"
+
 
 def get_supabase_client() -> Client:
     """Initialize and return Supabase client."""
@@ -22,8 +23,19 @@ def get_supabase_client() -> Client:
     
     return create_client(url, key)
 
-def _save_session_to_storage(access_token: str, refresh_token: str) -> bool:
-    """Save session tokens to browser localStorage.
+
+def _get_cookie_manager():
+    """Get the cookie manager instance (cached per session)."""
+    try:
+        from extra_streamlit_components import CookieManager
+        return CookieManager(key="saas_cookie_manager")
+    except Exception as e:
+        print(f"[Session] Cookie manager error: {e}")
+        return None
+
+
+def _save_session_cookie(access_token: str, refresh_token: str) -> bool:
+    """Save session tokens to browser cookie.
     
     Args:
         access_token: Supabase access token
@@ -33,124 +45,61 @@ def _save_session_to_storage(access_token: str, refresh_token: str) -> bool:
         True if save was initiated
     """
     try:
-        from streamlit_js_eval import streamlit_js_eval
+        cookie_mgr = _get_cookie_manager()
+        if not cookie_mgr:
+            return False
         
-        # Use incrementing counter to force re-render
-        if "_session_save_counter" not in st.session_state:
-            st.session_state._session_save_counter = 0
-        st.session_state._session_save_counter += 1
-        
-        # Store as JSON with both tokens
         session_data = json.dumps({
             "access_token": access_token,
             "refresh_token": refresh_token
         })
         
-        # Escape quotes for JS
-        session_data_escaped = session_data.replace("'", "\\'").replace('"', '\\"')
-        
-        js_code = f"""
-        (function() {{
-            try {{
-                // Use parent window's localStorage (streamlit_js_eval runs in a sandboxed iframe)
-                var storage = window.parent.localStorage || localStorage;
-                storage.setItem('{SESSION_STORAGE_KEY}', '{session_data_escaped}');
-                console.log('[SaaS Dashboard] Session saved to localStorage');
-                return true;
-            }} catch (e) {{
-                console.error('[SaaS Dashboard] Session save error:', e);
-                return false;
-            }}
-        }})()
-        """
-        
-        streamlit_js_eval(
-            js_expressions=js_code,
-            key=f"session_save_{st.session_state._session_save_counter}"
-        )
+        cookie_mgr.set(SESSION_COOKIE_KEY, session_data, max_age=86400)  # 24 hours
         return True
     except Exception as e:
-        print(f"[Session] Save error: {e}")
+        print(f"[Session] Save cookie error: {e}")
         return False
 
 
-def _load_session_from_storage() -> Optional[dict]:
-    """Load session tokens from browser localStorage.
+def _load_session_cookie() -> Optional[dict]:
+    """Load session tokens from browser cookie.
     
     Returns:
         Dict with access_token and refresh_token if found,
-        empty dict {} if JS executed but no session stored,
-        None if JS hasn't executed yet (first render).
+        None if no cookie found.
     """
     try:
-        from streamlit_js_eval import streamlit_js_eval
-        
-        # Return "__NO_SESSION__" sentinel when no data found,
-        # so we can distinguish "JS not run yet (None)" from "no stored session"
-        js_code = f"""
-        (function() {{
-            try {{
-                var storage = window.parent.localStorage || localStorage;
-                var data = storage.getItem('{SESSION_STORAGE_KEY}');
-                console.log('[SaaS Dashboard] Loading session:', data ? 'found' : 'not found');
-                return data || '__NO_SESSION__';
-            }} catch (e) {{
-                console.error('[SaaS Dashboard] Session load error:', e);
-                return '__NO_SESSION__';
-            }}
-        }})()
-        """
-        
-        result = streamlit_js_eval(js_expressions=js_code, key="session_loader")
-        
-        if result is None:
-            # JS component hasn't rendered yet - first render cycle
+        cookie_mgr = _get_cookie_manager()
+        if not cookie_mgr:
             return None
         
-        if result == '__NO_SESSION__':
-            # JS executed but no stored session found
-            return {}
+        data = cookie_mgr.get(SESSION_COOKIE_KEY)
         
-        return json.loads(result)
+        if data and isinstance(data, str):
+            return json.loads(data)
+        elif data and isinstance(data, dict):
+            return data
+        return None
     except Exception as e:
-        print(f"[Session] Load error: {e}")
-        return {}
+        print(f"[Session] Load cookie error: {e}")
+        return None
 
 
-def _clear_session_storage() -> bool:
-    """Clear session tokens from browser localStorage.
+def _clear_session_cookie() -> bool:
+    """Clear session cookie from browser.
     
     Returns:
         True if clear was initiated
     """
     try:
-        from streamlit_js_eval import streamlit_js_eval
+        cookie_mgr = _get_cookie_manager()
+        if not cookie_mgr:
+            return False
         
-        if "_session_clear_counter" not in st.session_state:
-            st.session_state._session_clear_counter = 0
-        st.session_state._session_clear_counter += 1
-        
-        js_code = f"""
-        (function() {{
-            try {{
-                var storage = window.parent.localStorage || localStorage;
-                storage.removeItem('{SESSION_STORAGE_KEY}');
-                console.log('[SaaS Dashboard] Session cleared from localStorage');
-                return true;
-            }} catch (e) {{
-                console.error('[SaaS Dashboard] Session clear error:', e);
-                return false;
-            }}
-        }})()
-        """
-        
-        streamlit_js_eval(
-            js_expressions=js_code,
-            key=f"session_clear_{st.session_state._session_clear_counter}"
-        )
+        cookie_mgr.delete(SESSION_COOKIE_KEY)
         return True
     except Exception as e:
-        print(f"[Session] Clear error: {e}")
+        print(f"[Session] Clear cookie error: {e}")
         return False
 
 
@@ -177,8 +126,8 @@ def login(email: str, password: str) -> bool:
             st.session_state.access_token = response.session.access_token
             st.session_state.refresh_token = response.session.refresh_token
             
-            # Save to localStorage for persistence
-            _save_session_to_storage(
+            # Save to cookie for persistence across page refreshes
+            _save_session_cookie(
                 response.session.access_token,
                 response.session.refresh_token
             )
@@ -188,6 +137,7 @@ def login(email: str, password: str) -> bool:
     except Exception as e:
         st.error(f"Login failed: {str(e)}")
         return False
+
 
 def signup(email: str, password: str) -> bool:
     """Sign up new user.
@@ -216,7 +166,7 @@ def signup(email: str, password: str) -> bool:
                 st.session_state.access_token = response.session.access_token
                 st.session_state.refresh_token = response.session.refresh_token
                 
-                _save_session_to_storage(
+                _save_session_cookie(
                     response.session.access_token,
                     response.session.refresh_token
                 )
@@ -227,10 +177,11 @@ def signup(email: str, password: str) -> bool:
         st.error(f"Signup failed: {str(e)}")
         return False
 
+
 def logout():
-    """Logout current user and clear session storage.
+    """Logout current user and clear session cookie.
     
-    Clears both Streamlit session state and browser localStorage.
+    Clears both Streamlit session state and browser cookie.
     """
     try:
         supabase = get_supabase_client()
@@ -244,55 +195,40 @@ def logout():
         if 'refresh_token' in st.session_state:
             del st.session_state.refresh_token
         
-        # Clear browser localStorage
-        _clear_session_storage()
+        # Clear browser cookie
+        _clear_session_cookie()
         
     except Exception as e:
         st.error(f"Logout failed: {str(e)}")
 
+
 def check_stored_session() -> bool:
-    """Check for stored session in localStorage and restore if valid.
+    """Check for stored session in cookie and restore if valid.
     
-    This is called on page load to restore authentication from browser storage.
-    Uses a two-phase approach:
-    - Phase 1 (first render): streamlit_js_eval renders but returns None. 
-      We return "pending" status so the caller can show a loading state.
-    - Phase 2 (second render): JS has executed and returns actual data.
+    This is called on page load to restore authentication from browser cookie.
     
     Returns:
-        True if session was restored, False otherwise.
-        When _load returns None (JS pending), sets _session_pending flag.
+        True if session was restored, False otherwise
     """
     # Skip if already authenticated
     if st.session_state.get("authenticated"):
         return True
     
-    # Check if we've already confirmed no session exists
+    # Skip if we already confirmed no session
     if st.session_state.get("_session_check_done"):
         return False
     
-    # Load tokens from localStorage
-    session_data = _load_session_from_storage()
+    # Load tokens from cookie
+    session_data = _load_session_cookie()
     
-    # None = JS component hasn't rendered yet (first render cycle)
-    # We need a rerun for the JS to execute and return a value
-    if session_data is None:
-        st.session_state._session_pending = True
-        return False
-    
-    # Empty dict = JS executed but no stored session
     if not session_data or 'access_token' not in session_data:
         st.session_state._session_check_done = True
-        st.session_state._session_pending = False
         return False
     
-    # We have stored tokens — try to restore the session
-    st.session_state._session_pending = False
-    
+    # Try to restore the session with stored tokens
     try:
         supabase = get_supabase_client()
         
-        # Set the session with stored tokens
         response = supabase.auth.set_session(
             session_data['access_token'],
             session_data['refresh_token']
@@ -306,23 +242,22 @@ def check_stored_session() -> bool:
             st.session_state.refresh_token = response.session.refresh_token
             st.session_state._session_check_done = True
             
-            # Update localStorage with refreshed tokens (if changed)
+            # Update cookie with refreshed tokens if changed
             if response.session.access_token != session_data['access_token']:
-                _save_session_to_storage(
+                _save_session_cookie(
                     response.session.access_token,
                     response.session.refresh_token
                 )
             
             return True
         else:
-            # Invalid/expired session - clear it
-            _clear_session_storage()
+            _clear_session_cookie()
             st.session_state._session_check_done = True
             return False
             
     except Exception as e:
         print(f"[Session] Restore error: {e}")
-        _clear_session_storage()
+        _clear_session_cookie()
         st.session_state._session_check_done = True
         return False
 
