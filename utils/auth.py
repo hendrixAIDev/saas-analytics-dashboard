@@ -52,7 +52,9 @@ def _save_session_to_storage(access_token: str, refresh_token: str) -> bool:
         js_code = f"""
         (function() {{
             try {{
-                localStorage.setItem('{SESSION_STORAGE_KEY}', '{session_data_escaped}');
+                // Use parent window's localStorage (streamlit_js_eval runs in a sandboxed iframe)
+                var storage = window.parent.localStorage || localStorage;
+                storage.setItem('{SESSION_STORAGE_KEY}', '{session_data_escaped}');
                 console.log('[SaaS Dashboard] Session saved to localStorage');
                 return true;
             }} catch (e) {{
@@ -88,7 +90,8 @@ def _load_session_from_storage() -> Optional[dict]:
         js_code = f"""
         (function() {{
             try {{
-                const data = localStorage.getItem('{SESSION_STORAGE_KEY}');
+                var storage = window.parent.localStorage || localStorage;
+                var data = storage.getItem('{SESSION_STORAGE_KEY}');
                 console.log('[SaaS Dashboard] Loading session:', data ? 'found' : 'not found');
                 return data || '__NO_SESSION__';
             }} catch (e) {{
@@ -130,7 +133,8 @@ def _clear_session_storage() -> bool:
         js_code = f"""
         (function() {{
             try {{
-                localStorage.removeItem('{SESSION_STORAGE_KEY}');
+                var storage = window.parent.localStorage || localStorage;
+                storage.removeItem('{SESSION_STORAGE_KEY}');
                 console.log('[SaaS Dashboard] Session cleared from localStorage');
                 return true;
             }} catch (e) {{
