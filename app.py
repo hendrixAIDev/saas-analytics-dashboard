@@ -312,20 +312,42 @@ def show_ai_insights_page(metrics: dict, revenue_df: pd.DataFrame, plan_df: pd.D
 def main():
     """Main application entry point.
     
-    Checks for stored session on page load, then shows appropriate view.
+    Uses a two-phase session restore:
+    1. First render: JS eval component renders, returns None. Show loading.
+    2. Second render (auto-rerun): JS returns stored tokens or sentinel.
+       Restore session if tokens found, otherwise show login.
     """
-    # Try to restore session from localStorage on page load
-    if not check_authentication():
-        restored = check_stored_session()
-        if restored:
-            # Session restored - trigger rerun to show dashboard
-            st.rerun()
-    
-    # Show appropriate view based on authentication status
+    # Already authenticated — show dashboard
     if check_authentication():
         show_dashboard()
-    else:
-        show_login_page()
+        return
+    
+    # Try to restore session from localStorage
+    restored = check_stored_session()
+    
+    if restored:
+        # Session successfully restored — rerun to show dashboard
+        st.rerun()
+        return
+    
+    # Check if we're still waiting for JS to execute (first render)
+    if st.session_state.get("_session_pending"):
+        # Show a brief loading state while JS component renders,
+        # then auto-rerun so the JS result is available
+        st.markdown(
+            "<div style='text-align:center; padding:60px;'>"
+            "<h3>📊 SaaS Analytics Dashboard</h3>"
+            "<p style='color:#888;'>Restoring session...</p>"
+            "</div>",
+            unsafe_allow_html=True
+        )
+        import time
+        time.sleep(0.5)
+        st.rerun()
+        return
+    
+    # No stored session — show login page
+    show_login_page()
 
 if __name__ == "__main__":
     main()

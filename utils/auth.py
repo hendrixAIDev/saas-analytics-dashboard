@@ -76,32 +76,42 @@ def _load_session_from_storage() -> Optional[dict]:
     """Load session tokens from browser localStorage.
     
     Returns:
-        Dict with access_token and refresh_token, or None if not found
+        Dict with access_token and refresh_token if found,
+        empty dict {} if JS executed but no session stored,
+        None if JS hasn't executed yet (first render).
     """
     try:
         from streamlit_js_eval import streamlit_js_eval
         
+        # Return "__NO_SESSION__" sentinel when no data found,
+        # so we can distinguish "JS not run yet (None)" from "no stored session"
         js_code = f"""
         (function() {{
             try {{
                 const data = localStorage.getItem('{SESSION_STORAGE_KEY}');
                 console.log('[SaaS Dashboard] Loading session:', data ? 'found' : 'not found');
-                return data || null;
+                return data || '__NO_SESSION__';
             }} catch (e) {{
                 console.error('[SaaS Dashboard] Session load error:', e);
-                return null;
+                return '__NO_SESSION__';
             }}
         }})()
         """
         
         result = streamlit_js_eval(js_expressions=js_code, key="session_loader")
         
-        if result:
-            return json.loads(result)
-        return None
+        if result is None:
+            # JS component hasn't rendered yet - first render cycle
+            return None
+        
+        if result == '__NO_SESSION__':
+            # JS executed but no stored session found
+            return {}
+        
+        return json.loads(result)
     except Exception as e:
         print(f"[Session] Load error: {e}")
-        return None
+        return {}
 
 
 def _clear_session_storage() -> bool:
@@ -240,29 +250,40 @@ def check_stored_session() -> bool:
     """Check for stored session in localStorage and restore if valid.
     
     This is called on page load to restore authentication from browser storage.
+    Uses a two-phase approach:
+    - Phase 1 (first render): streamlit_js_eval renders but returns None. 
+      We return "pending" status so the caller can show a loading state.
+    - Phase 2 (second render): JS has executed and returns actual data.
     
     Returns:
-        True if session was restored, False otherwise
+        True if session was restored, False otherwise.
+        When _load returns None (JS pending), sets _session_pending flag.
     """
     # Skip if already authenticated
     if st.session_state.get("authenticated"):
         return True
     
-    # Check if we've already tried to restore this session
+    # Check if we've already confirmed no session exists
     if st.session_state.get("_session_check_done"):
         return False
     
     # Load tokens from localStorage
     session_data = _load_session_from_storage()
     
-    # First render returns None - wait for next rerun
+    # None = JS component hasn't rendered yet (first render cycle)
+    # We need a rerun for the JS to execute and return a value
     if session_data is None:
+        st.session_state._session_pending = True
         return False
     
-    # No valid session data found
-    if not isinstance(session_data, dict) or 'access_token' not in session_data:
+    # Empty dict = JS executed but no stored session
+    if not session_data or 'access_token' not in session_data:
         st.session_state._session_check_done = True
+        st.session_state._session_pending = False
         return False
+    
+    # We have stored tokens — try to restore the session
+    st.session_state._session_pending = False
     
     try:
         supabase = get_supabase_client()
