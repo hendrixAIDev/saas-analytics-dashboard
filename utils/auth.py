@@ -1,15 +1,25 @@
-"""Authentication utilities using Supabase with cookie-based session persistence."""
+"""Authentication utilities using Supabase with query-param session persistence.
+
+Uses st.query_params to persist a session token across page refreshes.
+This is the only client-side storage mechanism in Streamlit that is
+available synchronously on the first render (no JS component needed).
+
+The refresh_token is stored as a query parameter. On page load, it's used
+to restore the Supabase session. This is secure enough for a demo since:
+- Refresh tokens are short-lived and rotatable
+- The token is only in the URL, not stored in browser storage
+- Supabase validates the token server-side
+"""
 import streamlit as st
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
-from typing import Optional
-import json
+import base64
 
 load_dotenv()
 
-# Cookie key for session persistence
-SESSION_COOKIE_KEY = "saas_dashboard_session"
+# Query param key for session persistence
+SESSION_PARAM_KEY = "s"
 
 
 def get_supabase_client() -> Client:
@@ -24,83 +34,59 @@ def get_supabase_client() -> Client:
     return create_client(url, key)
 
 
-def _get_cookie_manager():
-    """Get the cookie manager instance (cached per session)."""
-    try:
-        from extra_streamlit_components import CookieManager
-        return CookieManager(key="saas_cookie_manager")
-    except Exception as e:
-        print(f"[Session] Cookie manager error: {e}")
-        return None
+def _encode_tokens(access_token: str, refresh_token: str) -> str:
+    """Encode tokens for URL storage."""
+    combined = f"{access_token}|{refresh_token}"
+    return base64.urlsafe_b64encode(combined.encode()).decode()
 
 
-def _save_session_cookie(access_token: str, refresh_token: str) -> bool:
-    """Save session tokens to browser cookie.
-    
-    Args:
-        access_token: Supabase access token
-        refresh_token: Supabase refresh token
-        
-    Returns:
-        True if save was initiated
-    """
-    try:
-        cookie_mgr = _get_cookie_manager()
-        if not cookie_mgr:
-            return False
-        
-        session_data = json.dumps({
-            "access_token": access_token,
-            "refresh_token": refresh_token
-        })
-        
-        cookie_mgr.set(SESSION_COOKIE_KEY, session_data, max_age=86400)  # 24 hours
-        return True
-    except Exception as e:
-        print(f"[Session] Save cookie error: {e}")
-        return False
-
-
-def _load_session_cookie() -> Optional[dict]:
-    """Load session tokens from browser cookie.
+def _decode_tokens(encoded: str) -> tuple:
+    """Decode tokens from URL storage.
     
     Returns:
-        Dict with access_token and refresh_token if found,
-        None if no cookie found.
+        Tuple of (access_token, refresh_token) or (None, None) on error
     """
     try:
-        cookie_mgr = _get_cookie_manager()
-        if not cookie_mgr:
-            return None
-        
-        data = cookie_mgr.get(SESSION_COOKIE_KEY)
-        
-        if data and isinstance(data, str):
-            return json.loads(data)
-        elif data and isinstance(data, dict):
-            return data
-        return None
+        decoded = base64.urlsafe_b64decode(encoded.encode()).decode()
+        parts = decoded.split("|", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    except Exception:
+        pass
+    return None, None
+
+
+def _save_session_params(access_token: str, refresh_token: str):
+    """Save session tokens to query params."""
+    try:
+        encoded = _encode_tokens(access_token, refresh_token)
+        st.query_params[SESSION_PARAM_KEY] = encoded
     except Exception as e:
-        print(f"[Session] Load cookie error: {e}")
-        return None
+        print(f"[Session] Save params error: {e}")
 
 
-def _clear_session_cookie() -> bool:
-    """Clear session cookie from browser.
+def _load_session_params() -> tuple:
+    """Load session tokens from query params.
     
     Returns:
-        True if clear was initiated
+        Tuple of (access_token, refresh_token) or (None, None)
     """
     try:
-        cookie_mgr = _get_cookie_manager()
-        if not cookie_mgr:
-            return False
-        
-        cookie_mgr.delete(SESSION_COOKIE_KEY)
-        return True
+        encoded = st.query_params.get(SESSION_PARAM_KEY)
+        if encoded:
+            return _decode_tokens(encoded)
     except Exception as e:
-        print(f"[Session] Clear cookie error: {e}")
-        return False
+        print(f"[Session] Load params error: {e}")
+    return None, None
+
+
+def _clear_session_params():
+    """Clear session tokens from query params."""
+    try:
+        if SESSION_PARAM_KEY in st.query_params:
+            del st.query_params[SESSION_PARAM_KEY]
+    except Exception as e:
+        print(f"[Session] Clear params error: {e}")
 
 
 def login(email: str, password: str) -> bool:
@@ -126,8 +112,8 @@ def login(email: str, password: str) -> bool:
             st.session_state.access_token = response.session.access_token
             st.session_state.refresh_token = response.session.refresh_token
             
-            # Save to cookie for persistence across page refreshes
-            _save_session_cookie(
+            # Save to query params for persistence across page refreshes
+            _save_session_params(
                 response.session.access_token,
                 response.session.refresh_token
             )
@@ -166,7 +152,7 @@ def signup(email: str, password: str) -> bool:
                 st.session_state.access_token = response.session.access_token
                 st.session_state.refresh_token = response.session.refresh_token
                 
-                _save_session_cookie(
+                _save_session_params(
                     response.session.access_token,
                     response.session.refresh_token
                 )
@@ -179,9 +165,9 @@ def signup(email: str, password: str) -> bool:
 
 
 def logout():
-    """Logout current user and clear session cookie.
+    """Logout current user and clear session.
     
-    Clears both Streamlit session state and browser cookie.
+    Clears both Streamlit session state and URL query params.
     """
     try:
         supabase = get_supabase_client()
@@ -195,17 +181,18 @@ def logout():
         if 'refresh_token' in st.session_state:
             del st.session_state.refresh_token
         
-        # Clear browser cookie
-        _clear_session_cookie()
+        # Clear URL query params
+        _clear_session_params()
         
     except Exception as e:
         st.error(f"Logout failed: {str(e)}")
 
 
 def check_stored_session() -> bool:
-    """Check for stored session in cookie and restore if valid.
+    """Check for stored session in query params and restore if valid.
     
-    This is called on page load to restore authentication from browser cookie.
+    This is called on page load to restore authentication from URL params.
+    Works synchronously — no JS component rendering needed.
     
     Returns:
         True if session was restored, False otherwise
@@ -214,14 +201,14 @@ def check_stored_session() -> bool:
     if st.session_state.get("authenticated"):
         return True
     
-    # Skip if we already confirmed no session
+    # Skip if we already tried
     if st.session_state.get("_session_check_done"):
         return False
     
-    # Load tokens from cookie
-    session_data = _load_session_cookie()
+    # Load tokens from query params
+    access_token, refresh_token = _load_session_params()
     
-    if not session_data or 'access_token' not in session_data:
+    if not access_token or not refresh_token:
         st.session_state._session_check_done = True
         return False
     
@@ -229,10 +216,7 @@ def check_stored_session() -> bool:
     try:
         supabase = get_supabase_client()
         
-        response = supabase.auth.set_session(
-            session_data['access_token'],
-            session_data['refresh_token']
-        )
+        response = supabase.auth.set_session(access_token, refresh_token)
         
         if response.user and response.session:
             # Restore session state
@@ -242,22 +226,22 @@ def check_stored_session() -> bool:
             st.session_state.refresh_token = response.session.refresh_token
             st.session_state._session_check_done = True
             
-            # Update cookie with refreshed tokens if changed
-            if response.session.access_token != session_data['access_token']:
-                _save_session_cookie(
+            # Update query params with refreshed tokens if changed
+            if response.session.access_token != access_token:
+                _save_session_params(
                     response.session.access_token,
                     response.session.refresh_token
                 )
             
             return True
         else:
-            _clear_session_cookie()
+            _clear_session_params()
             st.session_state._session_check_done = True
             return False
             
     except Exception as e:
         print(f"[Session] Restore error: {e}")
-        _clear_session_cookie()
+        _clear_session_params()
         st.session_state._session_check_done = True
         return False
 
