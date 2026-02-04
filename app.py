@@ -48,6 +48,8 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'user' not in st.session_state:
     st.session_state.user = None
+if 'just_signed_up' not in st.session_state:
+    st.session_state.just_signed_up = False
 
 def show_login_page():
     """Display login/signup page."""
@@ -84,6 +86,9 @@ def show_login_page():
                     if password == password_confirm:
                         if len(password) >= 6:
                             if signup(email, password):
+                                # Mark that we just signed up (for welcome message on dashboard)
+                                if st.session_state.authenticated:
+                                    st.session_state.just_signed_up = True
                                 st.rerun()
                         else:
                             st.error("Password must be at least 6 characters")
@@ -94,6 +99,12 @@ def show_login_page():
 
 def show_dashboard():
     """Display main dashboard."""
+    # Show welcome message for new signups
+    if st.session_state.get('just_signed_up', False):
+        st.success("✅ Account created! You're now logged in.")
+        st.balloons()  # Celebratory effect for new users
+        st.session_state.just_signed_up = False  # Clear the flag
+    
     # Sidebar
     with st.sidebar:
         st.title("📊 Dashboard")

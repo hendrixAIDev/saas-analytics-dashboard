@@ -36,20 +36,57 @@ def login(email: str, password: str) -> bool:
         return False
 
 def signup(email: str, password: str) -> bool:
-    """Sign up new user."""
+    """Sign up new user and automatically log them in."""
     try:
         supabase = get_supabase_client()
+        
+        # Check if email confirmation is required (production mode)
+        require_email_confirmation = os.getenv("REQUIRE_EMAIL_CONFIRMATION", "false").lower() == "true"
+        
         response = supabase.auth.sign_up({
             "email": email,
             "password": password
         })
         
         if response.user:
-            st.success("✅ Account created! Please check your email to verify.")
-            return True
+            if require_email_confirmation:
+                # Production: require email verification before login
+                st.success("✅ Account created! Please check your email to verify before logging in.")
+                return True
+            else:
+                # Development/staging: auto-login after signup
+                # Check if user is already confirmed or if Supabase auto-confirmed
+                if response.session:
+                    # User was auto-confirmed, we have a session
+                    st.session_state.user = response.user
+                    st.session_state.authenticated = True
+                    st.success("✅ Account created! You're now logged in.")
+                    return True
+                else:
+                    # Try to sign in immediately (works if email confirmation is disabled in Supabase)
+                    try:
+                        login_response = supabase.auth.sign_in_with_password({
+                            "email": email,
+                            "password": password
+                        })
+                        if login_response.user:
+                            st.session_state.user = login_response.user
+                            st.session_state.authenticated = True
+                            st.success("✅ Account created! You're now logged in.")
+                            return True
+                    except:
+                        pass
+                    
+                    # Fallback: show verification message if auto-login failed
+                    st.success("✅ Account created! Please check your email to verify, then log in.")
+                    return True
         return False
     except Exception as e:
-        st.error(f"Signup failed: {str(e)}")
+        error_msg = str(e)
+        if "already registered" in error_msg.lower():
+            st.error("❌ This email is already registered. Please log in instead.")
+        else:
+            st.error(f"Signup failed: {error_msg}")
         return False
 
 def logout():
