@@ -118,7 +118,7 @@ saas-analytics-dashboard/
 
 ## 🔧 Customization
 
-See [CUSTOMIZATION.md](CUSTOMIZATION.md) for detailed instructions on:
+See [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md) for detailed instructions on:
 - Changing colors and styling
 - Adding new metrics
 - Modifying database schema
